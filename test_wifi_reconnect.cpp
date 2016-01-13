@@ -21,8 +21,8 @@
 #include <ESP8266.h>
 #include <SoftwareSerial.h>
 
-#define SSID        "HOME-DE18"
-#define PASSWORD    "H210470C899576BD"
+#define SSID        ""
+#define PASSWORD    ""
 #define HOST_NAME   "10.0.0.12"
 #define HOST_PORT   (8090)
 
