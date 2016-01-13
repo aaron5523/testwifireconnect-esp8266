@@ -1,0 +1,673 @@
+//Created by: Mohan Palanisamy
+//1. Assumes the MQTT broker has a REST capable HTTP End point similar to Ponte
+//This code was tested using a Eclipse Ponte bridge and the
+//Arduino Yun Http endpoints from the Bridge Library
+//2. PUT has been tested. POST seems to work reasonably well. GET has kinks in it.
+//3. Please note there is a Timeout value set here that will determine how long the
+//software serial will wait for a response. Take that in to account in any delay() you
+//program in to your sketch.
+//4. Uncomment the _DEBUG flag if you want to see Serial.println()s sent to the Serial Port
+//   If you do so, you might want to comment the Serial.begin() in your sketch becuase this opens the serial
+
+#include <avr/pgmspace.h>
+#include <SoftwareSerial.h>
+#include "ESP8266RESTHelper.h"
+#include <MemoryFree.h>
+
+#define _DEBUG
+
+//using Digital 2 and 3 pins for connecting to ESP as software serial
+#define DBG_RX_PIN 13
+#define DBG_TX_PIN 12
+#define TIMEOUT 10000
+#define WIFI_CONNECT_TIMEOUT 10000
+#define ESP_BAUD_RATE 115200
+#define CONTINUE            false
+#define HALT                true
+#define DO_ECHO             true
+#define NO_ECHO             false
+#define CONNECTION_TRIES    5
+#define RESEND_RETRIES		3
+
+const char ok_string[] PROGMEM = "OK";
+const char fail_string[] PROGMEM = "FAIL";
+const char error_string[] PROGMEM = "ERROR";
+const char closed_string[] PROGMEM = "CLOSED";
+const char isConnected_string[] PROGMEM = "STATUS:3";
+const char sendOk_string[] PROGMEM = "OK";
+const char httpOk_string[] PROGMEM = "200 OK";
+
+const char* const string_table[] PROGMEM = { ok_string, fail_string,
+		error_string, closed_string, isConnected_string, sendOk_string, httpOk_string };
+
+char status_buffer[10];
+
+SoftwareSerial debugSerial(DBG_RX_PIN, DBG_TX_PIN);
+boolean isESP8266Available = false;
+String GW_IP = "10.0.0.1";
+uint8 retry_count = 0;
+
+ESP8266RESTHelper::ESP8266RESTHelper() {
+}
+
+void ESP8266RESTHelper::printFreeMem() {
+	debugSerial.print(F("freeMemory()="));
+	debugSerial.println(freeMemory());
+}
+
+//begins a ESP Session. Assumes that Wireless configuration has already been done and connected to network.
+//IP address is already set
+boolean ESP8266RESTHelper::begin(void) {
+	initSerialPorts();
+	isESP8266Available = isModuleReady();
+	printFreeMem();
+	return isESP8266Available;
+}
+
+void ESP8266RESTHelper::getEspCmdString(uint8_t i) {
+	strcpy_P(status_buffer, (char*) pgm_read_word(&(string_table[i])));
+}
+
+void ESP8266RESTHelper::expectOK() {
+	getEspCmdString(0); //Set status_buffer string to "OK"
+}
+
+void ESP8266RESTHelper::expectFAIL() {
+	getEspCmdString(1); //Set status_buffer string to "FAIL"
+}
+
+boolean ESP8266RESTHelper::begin(String WifiNetworkNameSSID,
+		String WifiPassword) {
+	initSerialPorts();
+	printFreeMem();
+	isESP8266Available = isModuleReady();
+	printFreeMem();
+	if (isESP8266Available) {
+		debugSerial.println(F("Resetting Module"));
+//		runEspCmd("AT+RST");
+		Serial.println(F("AT+RST"));
+		delay(2000);
+		Serial.println(F("AT+CWMODE=1"));
+		Serial.println(F("AT+CIPMUX=0"));
+		debugSerial.println(F("Quitting any previous access point"));
+		Serial.println(F("AT+CWQAP"));
+		debugSerial.print(F("Connecting to WiFi Network: "));
+		debugSerial.println(WifiNetworkNameSSID);
+		String wifiConnectCommand = "AT+CWJAP=\"" + WifiNetworkNameSSID
+				+ "\",\"" + WifiPassword + "\"";
+		debugSerial.println(wifiConnectCommand);
+		runEspCmd(wifiConnectCommand);
+		delay(5000);
+		expectOK();
+		if (Serial.find(status_buffer)) {
+			isESP8266Available = true;
+			debugSerial.print(F("Connected to WiFi Network: "));
+			debugSerial.println(WifiNetworkNameSSID);
+			// for (int i = 0; i < 5; i++) {
+			debugSerial.println(F("Status: "));
+			debugSerial.println(showStatus());
+			boolean isConnected = isGatewayReachable();
+			debugSerial.print(F("Is Wifi Connected: "));
+			debugSerial.println(isConnected);
+			// if (isConnected) {
+			//   break;
+			// }
+			// }
+		} else {
+			expectFAIL();
+			if (Serial.find(status_buffer)) {
+				debugSerial.print(F("Unable to connect to WiFi Network: "));
+				debugSerial.println(WifiNetworkNameSSID);
+				isESP8266Available = false;
+			}
+		}
+	}
+	Serial.setTimeout(TIMEOUT);
+	String currentStatus = showStatus();
+	debugSerial.print(F("Current Status: "));
+	debugSerial.println(currentStatus);
+	delay(2000);
+	Serial.println(F("AT+CIPSTA?"));
+	readSerialForDebug();
+	return isESP8266Available;
+}
+
+boolean ESP8266RESTHelper::sendMQTTMessage(String server, int port,
+		String topic, String message) {
+	String response = "";
+	return httpAction("PUT", server, port, topic, message, &response);
+}
+
+//These methods are work in progress. Not tested fully. Use at your own risk and modify as you see fit.
+boolean ESP8266RESTHelper::httpPOST(String server, int port, String resourceURI,
+		String content, String* response) {
+	return httpAction("POST", server, port, resourceURI, content, response);
+}
+//These methods are work in progress. Not tested fully. Use at your own risk and modify as you see fit.
+boolean ESP8266RESTHelper::httpPUT(String server, int port, String resourceURI,
+		String content, String* response) {
+	return httpAction("PUT", server, port, resourceURI, content, response);
+}
+//These methods are work in progress. Not tested fully. Use at your own risk and modify as you see fit.
+boolean ESP8266RESTHelper::httpGET(String server, int port, String resourceURI,
+		String* response) {
+	return httpAction("GET", server, port, resourceURI, "", response);
+}
+
+void ESP8266RESTHelper::initSerialPorts() {
+#if defined(_DEBUG)
+	debugSerial.begin(9600);
+	debugSerial.println(F("Debug Serial Port opened..."));
+#endif
+
+	Serial.begin(ESP_BAUD_RATE);
+	Serial.setTimeout(WIFI_CONNECT_TIMEOUT);
+}
+
+void ESP8266RESTHelper::expectSendOk() {
+	//	readSerialForDebug();
+	getEspCmdString(5); //Set status_buffer string to "SEND OK"
+}
+
+boolean ESP8266RESTHelper::httpAction(String httpVerb, String server, int port,
+		String resourceURI, String content, String* response) {
+	if (!isESP8266Available)
+		return false;
+
+	// if ( isServerReachable(server) ) {
+	// if (testTcpConnection(server, port) ) {
+	//Prepare all command strings
+
+	//1. prepare TCP Connection AT Command
+	String startTCPSession = "AT+CIPSTART=\"TCP\",\"" + server + "\"," + port;
+
+	//2. prepare PUT Request AT Command
+	String tcpPacket = httpVerb + " " + resourceURI;
+
+	if (!httpVerb.equals("GET")) {
+		tcpPacket = tcpPacket + " HTTP/1.1\r\n"
+				"Host: " + server + ":" + port + "\r\n"
+				"Accept: */*\r\n" + "Content-Length: " + content.length()
+				+ "\r\n"
+						"Content-Type: application/x-www-form-urlencoded\r\n"
+						"\r\n" + content;
+	} else {
+		tcpPacket = tcpPacket + " HTTP/1.0\r\n\r\n";
+	}
+
+	//3. prepare Length of TCP Packet ATP Command
+	String temp_ATCommand = "AT+CIPSEND=";
+	String lengthTCPPacket = temp_ATCommand + tcpPacket.length();
+
+	//AT Commands are ready.. Lets Send them after checking at each command.
+	//Each check is a blocking call.
+
+#if defined(_DEBUG)
+	debugSerial.println(F("Opening TCP Connection.."));
+	debugSerial.print(F("Command : "));
+	debugSerial.println(startTCPSession);
+#endif
+
+	runEspCmd(startTCPSession);
+
+	// if (Serial.find("CONNECTED")) {
+#if defined(_DEBUG)
+	debugSerial.println(F("Connected.."));
+	debugSerial.println(F("Sending Packet Length..."));
+	debugSerial.print(F("Command : "));
+	debugSerial.println(lengthTCPPacket);
+#endif
+
+	runEspCmd(lengthTCPPacket);
+
+#if defined(_DEBUG)
+	debugSerial.println(F("Sending Packet...."));
+	debugSerial.println(tcpPacket);
+#endif
+	runEspCmd(tcpPacket);
+	while (!Serial.available())
+		;
+//	readSerialForDebug();
+	expectSendOk();
+	if (Serial.find(status_buffer)) {
+#if defined(_DEBUG)
+		debugSerial.println(F("Packet Sent!!!"));
+#endif
+//	delay(2000);
+		char a;
+		uint16_t buffer_size;
+		buffer_size = 256;
+		uint8_t buffer[buffer_size + 1];
+//		memset(buffer, 0, buffer_size + 1);
+		//    uint8_t buffer[ buffer_size ] = {0};
+
+//		//OLD SERIAL READ
+//		uint32_t i;
+////		i = recvPkg(buffer, sizeof(buffer), NULL, 10000, NULL);
+//		unsigned long start;
+////
+//		i = 0;
+////		//	ret = len > buffer_size ? buffer_size : len;
+//		start = millis();
+//		while ((millis() - start) < 3000) {
+//			while (Serial.available() > 0 && i < buffer_size) {
+//				a = Serial.read();
+//				buffer[i++] = a;
+//			}
+//			if (i > 0 && i == buffer_size) {
+//				//			debugSerial.println("Filled buffer");
+//				rx_empty();
+//			}
+//		}
+//		if (i > 0) {
+//					debugSerial.print(F("Received:["));
+//					for (uint32_t j = 0; j < i; j++) {
+//						debugSerial.print((char) buffer[j]);
+//					}
+//					debugSerial.println(F("]"));
+//				}
+//		//OLD SERIAL READ
+		//
+		static byte dataBufferIndex = 0;
+		boolean storeString = false; //This will be our flag to put the data in our buffer
+		char carriageReturn = 0x0D;
+		char newLine = 0x0A;
+		char startHeader[4] = { carriageReturn, newLine };
+		char tailString[7] =
+				{ carriageReturn, newLine, carriageReturn, newLine };
+		boolean sawCR = false;
+		boolean sawNL = false;
+		boolean isEnd = false;
+		uint8_t crNlCnt = 0;
+		while (Serial.available() > 0) {
+			char incomingbyte = Serial.read();
+			if (sawCR == true && sawNL == true) {
+				sawCR = false;
+				sawNL = false;
+				crNlCnt++;
+			}
+
+			if (incomingbyte == 0x48) { //See if we got a H for the HTTP header
+				dataBufferIndex = 0;  //Initialize our dataBufferIndex variable
+				storeString = true;
+			}
+
+			if (incomingbyte == carriageReturn) {
+				sawCR = true;
+			} else if (incomingbyte == newLine) {
+				sawNL = true;
+			} else {
+				crNlCnt = 0;
+			}
+
+			if (crNlCnt > 1) {
+				isEnd = true;
+			}
+
+			if (storeString) {
+				//Let's check our index here, and abort if we're outside our buffer size
+				//We use our define here so our buffer size can be easily modified
+				if (dataBufferIndex == buffer_size) {
+					//Oops, our index is pointing to an array element outside our buffer.
+					dataBufferIndex = 0;
+					break;
+				}
+				if (isEnd) {
+					buffer[dataBufferIndex] = 0; //null terminate the C string
+					//Our data string is complete.  return true
+					return true;
+				} else {
+					buffer[dataBufferIndex++] = incomingbyte;
+					buffer[dataBufferIndex] = 0; //null terminate the C string
+				}
+			} else {
+			}
+		}
+
+		if (dataBufferIndex > 0) {
+			debugSerial.print(F("Received:["));
+			for (uint32_t j = 0; j < dataBufferIndex; j++) {
+				debugSerial.print((char) buffer[j]);
+			}
+			debugSerial.println(F("]"));
+		}
+
+		//We've read in all the available Serial data, and don't have a valid string yet, so return false
+//		return false;
+
+		//After reading close the connection. Do not want to reuse because the TCP stack on
+		//ESP8266 might close the connection after a while.
+		//So make sure the connection is closed by sending AT+CIPCLOSE
+		rx_empty();
+		runEspCmd("AT+CIPCLOSE");
+		printFreeMem();
+		for (uint8_t i = 0; i < 5; i++) {
+			rx_empty();
+		}
+		return true;
+	} else {
+#if defined(_DEBUG)
+		debugSerial.println("Sending Packet Failed");
+#endif
+		return false;
+	}
+	// } else {
+	//   #if defined(_DEBUG)
+	//       Serial.println("Cannot Start TCP Session");
+	//       readSerialForDebug();
+	//   #endif
+	//   closeTcpConnection();
+	//   return false;
+	// }
+	//   } else {
+	//       Serial.println("Unable to connect via TCP to server");
+	// }
+	// } else {
+	//       Serial.println("Unable to ping server");
+	// }
+
+}
+
+String ESP8266RESTHelper::readSerialForDebug() {
+	String data;
+#if defined(_DEBUG)
+	char a;
+	uint8_t buffer_size;
+	buffer_size = 128;
+	uint8_t buffer[buffer_size];
+	memset(buffer, 0, buffer_size);
+//    uint8_t buffer[ buffer_size ] = {0};
+
+	uint8_t i;
+	unsigned long start;
+
+	i = 0;
+//	ret = len > buffer_size ? buffer_size : len;
+	start = millis();
+	while ((millis() - start) < 3000) {
+		while (Serial.available() > 0 && i < buffer_size) {
+			a = Serial.read();
+			buffer[i++] = a;
+		}
+		if (i > 0 && i == buffer_size) {
+//			debugSerial.println("Filled buffer");
+			rx_empty();
+		}
+	}
+//
+	if (i > 0) {
+		debugSerial.print(F("Received:["));
+		for (uint8_t j = 0; j < i; j++) {
+			debugSerial.print((char) buffer[j]);
+		}
+		debugSerial.println(F("]"));
+	}
+//	unsigned long start;
+//	start = millis();
+//	while (millis() - start < 3000) {
+//		if (Serial.available() > 0) {
+//			char a = Serial.read();
+//			if (a >= 0 && a < 128) {
+//				data = data + a;
+//			}
+//		}
+//
+//		if (data.indexOf("OK") != -1) {
+//			break;
+//		}
+//	}
+//	data = cleanData(data);
+//	debugSerial.println("Current data available: ");
+//	debugSerial.println(data);
+#endif
+	return data;
+}
+
+void ESP8266RESTHelper::expectERROR() {
+	getEspCmdString(2); //Set status_buffer string to "ERROR"
+}
+
+boolean ESP8266RESTHelper::testTcpConnection(String server, int port) {
+	boolean tcpAvailable = false;
+	closeTcpConnection();
+	String startTCPSession = "AT+CIPSTART=\"TCP\",\"" + server + "\"," + port;
+	debugSerial.print(F("Testing TCP Connection to: "));
+	debugSerial.print(server);
+	debugSerial.print(F(":"));
+	debugSerial.println(port);
+	runEspCmd(startTCPSession);
+	delay(1000);
+	// readSerialForDebug();
+	expectOK();
+	if (Serial.find(status_buffer)) {
+		tcpAvailable = true;
+	}
+	expectERROR();
+	if (Serial.find(status_buffer)) {
+		debugSerial.println(F("Received error during TCP connection"));
+	}
+	runEspCmd("AT+CIPCLOSE");
+	return tcpAvailable;
+}
+
+boolean ESP8266RESTHelper::isModuleReady() {
+	boolean isReady = false;
+#if defined(_DEBUG)
+	debugSerial.println(F("checking.."));
+#endif
+
+	runEspCmd("AT");
+	expectOK();
+	if (Serial.find(status_buffer)) {
+		isReady = true;
+	}
+#if defined(_DEBUG)
+	if (isReady) {
+		debugSerial.println(F("ESP8266 is available and responding.."));
+	} else {
+		debugSerial.println(F("ESP8266 is not available.."));
+	}
+#endif
+
+	return isReady;
+}
+
+void ESP8266RESTHelper::expectCLOSED() {
+	getEspCmdString(3); //Set status_buffer string to "CLOSED"
+}
+
+boolean ESP8266RESTHelper::closeTcpConnection() {
+	boolean isClosed = false;
+#if defined(_DEBUG)
+	debugSerial.println(F("Closing IP Connection.."));
+#endif
+
+	if (isConnected()) {
+		runEspCmd("AT+CIPCLOSE");
+		expectCLOSED();
+		if (Serial.find(status_buffer)) {
+			isClosed = true;
+		}
+
+#if defined(_DEBUG)
+		if (isClosed) {
+			debugSerial.println(F("ESP8266 closed IP connection."));
+		} else {
+			debugSerial.println(F("ESP8266 unable to close IP connection"));
+		}
+#endif
+	}
+
+	return isClosed;
+}
+
+boolean ESP8266RESTHelper::isGatewayReachable() {
+	return isServerReachable(GW_IP);
+}
+
+boolean ESP8266RESTHelper::isServerReachable(String ip) {
+	boolean isPingable = false;
+#if defined(_DEBUG)
+	String msg = "Pinging " + ip + " ...";
+	debugSerial.println(msg);
+#endif
+
+	String pingCmd = "AT+PING=\"" + ip + "\"";
+	runEspCmd(pingCmd);
+	expectOK();
+	if (Serial.find(status_buffer)) {
+		isPingable = true;
+	}
+	readSerialForDebug();
+
+#if defined(_DEBUG)
+	debugSerial.print(ip);
+	if (isPingable) {
+		debugSerial.println(F(" is reachable."));
+	} else {
+		debugSerial.println(F(" is unreachable."));
+	}
+#endif
+
+	return isPingable;
+}
+
+String ESP8266RESTHelper::showStatus(void) {
+	runEspCmd("AT+CIPSTATUS=?");
+	return readSerialForDebug();
+}
+
+String ESP8266RESTHelper::runEspCmd(String command) {
+	rx_empty();
+#if defined(_DEBUG)
+	String msg = "Running CMD: " + command;
+	debugSerial.println(msg);
+#endif
+
+	Serial.println(command);
+//	Serial.flush();
+//	delayMicroseconds(460);
+//	 readSerialForDebug();
+	return "";
+}
+
+void ESP8266RESTHelper::expectCONNECTED() {
+	getEspCmdString(4); //Set status_buffer string to "STATUS:3"
+}
+
+boolean ESP8266RESTHelper::isConnected() {
+	boolean isConnected = false;
+
+	String statusCmd = "AT+CIPSTATUS";
+	runEspCmd(statusCmd);
+	expectCONNECTED();
+	if (Serial.find(status_buffer)) {
+		isConnected = true;
+	}
+
+#if defined(_DEBUG)
+	if (isConnected) {
+		String msg = "Currently is connected.";
+		debugSerial.println(msg);
+	} else {
+		String msg = "Currently is not connected.";
+		debugSerial.println(msg);
+	}
+#endif
+
+	return isConnected;
+}
+
+String ESP8266RESTHelper::cleanData(String data) {
+	char head[4] = { 0x0D, 0x0A };
+	char tail[7] = { 0x0D, 0x0A, 0x0D, 0x0A };
+	expectOK();
+	data.replace(status_buffer, "");
+	data.replace(tail, "");
+	data.replace(head, "");
+	return data;
+}
+
+uint32_t ESP8266RESTHelper::recvPkg(uint8_t *buffer, uint16_t buffer_size,
+		uint16_t *data_len, uint16_t timeout, uint8_t *coming_mux_id) {
+	String data;
+	char a;
+	int32_t index_PIPDcomma = -1;
+	int32_t index_colon = -1; /* : */
+	int32_t index_comma = -1; /* , */
+	int32_t len = -1;
+	int8_t id = -1;
+	bool has_data = false;
+	uint32_t ret;
+	unsigned long start;
+	uint32_t i;
+
+	if (buffer == NULL) {
+		return 0;
+	}
+
+	start = millis();
+	while (millis() - start < timeout) {
+		if (Serial.available() > 0) {
+			a = Serial.read();
+			data += a;
+		}
+
+		index_PIPDcomma = data.indexOf("+IPD,");
+		if (index_PIPDcomma != -1) {
+			index_colon = data.indexOf(':', index_PIPDcomma + 5);
+			if (index_colon != -1) {
+				index_comma = data.indexOf(',', index_PIPDcomma + 5);
+				/* +IPD,id,len:data */
+				if (index_comma != -1 && index_comma < index_colon) {
+					id =
+							data.substring(index_PIPDcomma + 5, index_comma).toInt();
+					if (id < 0 || id > 4) {
+						return 0;
+					}
+					len = data.substring(index_comma + 1, index_colon).toInt();
+					if (len <= 0) {
+						return 0;
+					}
+				} else { /* +IPD,len:data */
+					len =
+							data.substring(index_PIPDcomma + 5, index_colon).toInt();
+					if (len <= 0) {
+						return 0;
+					}
+				}
+				has_data = true;
+				break;
+			}
+		}
+	}
+
+	if (has_data) {
+		i = 0;
+		ret = len > buffer_size ? buffer_size : len;
+		start = millis();
+		while (millis() - start < 3000) {
+			while (Serial.available() > 0 && i < ret) {
+				a = Serial.read();
+				buffer[i++] = a;
+			}
+			if (i == ret) {
+				rx_empty();
+				if (data_len) {
+					*data_len = len;
+				}
+				if (index_comma != -1 && coming_mux_id) {
+					*coming_mux_id = id;
+				}
+				return ret;
+			}
+		}
+	}
+	return 0;
+}
+
+void ESP8266RESTHelper::rx_empty(void) {
+	while (Serial.available() > 0) {
+		Serial.read();
+	}
+}
