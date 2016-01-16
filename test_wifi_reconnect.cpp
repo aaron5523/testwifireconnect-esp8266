@@ -20,14 +20,23 @@
  */
 #include <ESP8266.h>
 #include <SoftwareSerial.h>
+#include <RGBTools.h>
 
 #define SSID        ""
 #define PASSWORD    ""
-#define HOST_NAME   "10.0.0.12"
+#define HOST_NAME   "10.0.0.8"
 #define HOST_PORT   (8090)
+#define URI_STRING_BUFFER_LENGTH   (64)
 
 #define DBG_RX_PIN 13
 #define DBG_TX_PIN 12
+
+#define TEMP_ID     "567c133d7625422fc7a9f4e8"
+int REDPin = 9;    // RED pin of the LED to PWM pin 2
+int GREENPin = 10;  // GREEN pin of the LED to PWM pin 3
+int BLUEPin = 11;   // BLUE pin of the LED to PWM pin 4
+
+RGBTools rgb(REDPin,GREENPin,BLUEPin, COMMON_CATHODE);
 
 ESP8266 wifi = ESP8266();
 
@@ -36,16 +45,89 @@ SoftwareSerial debugSerial2 = SoftwareSerial(DBG_RX_PIN, DBG_TX_PIN);
 bool wifiConnected = false;
 
 void connectToWifi() {
+
+
+
 	if (wifi.joinAP(SSID, PASSWORD)) {
 		wifiConnected = true;
 		debugSerial2.print(F("Join AP success\r\n"));
+		rgb.setColor(0,255,0);
 	} else {
 		wifiConnected = false;
 		debugSerial2.print(F("Join AP failure\r\n"));
+		rgb.setColor(255,0,0);
+	}
+}
+
+void save_value(String sensorId, String value) {
+	//Build a HTTP GET string to store the update
+	String URI_STRING = "GET /u/";
+	URI_STRING += wifi.getApMac();
+	URI_STRING += "/";
+	URI_STRING += sensorId;
+	URI_STRING += "?rv=";
+	URI_STRING += value;
+	URI_STRING += " HTTP/1.0\r\n\r\n";
+	debugSerial2.print(F("URI_STRING.length(): "));
+	debugSerial2.println(URI_STRING.length());
+	debugSerial2.print(F("URI_STRING: "));
+	debugSerial2.println(URI_STRING);
+	char uriCharBuffer[URI_STRING_BUFFER_LENGTH];
+	memset(uriCharBuffer, 0, URI_STRING_BUFFER_LENGTH);
+	URI_STRING.toCharArray(uriCharBuffer, URI_STRING_BUFFER_LENGTH);
+
+	uint8_t responseBuffer[256] = { 0 };
+
+	if (wifi.createTCP(HOST_NAME, HOST_PORT)) {
+		debugSerial2.print(F("create tcp ok\r\n"));
+	} else {
+		debugSerial2.print(F("create tcp err\r\n"));
+		wifiConnected = false;
+	}
+	if (wifiConnected) {
+		wifi.send((const uint8_t*) uriCharBuffer, strlen(uriCharBuffer));
+
+		uint32_t len = wifi.recv(responseBuffer, sizeof(responseBuffer), 10000);
+		debugSerial2.print(F("Current Status: "));
+		String status = wifi.getIPStatus();
+		debugSerial2.println(status);
+		if (len > 0) {
+			debugSerial2.print(F("Received:["));
+			for (uint32_t i = 0; i < len; i++) {
+				debugSerial2.print((char) responseBuffer[i]);
+			}
+			debugSerial2.print(F("]\r\n"));
+		} else {
+			wifiConnected = false;
+		}
+
+		if (status.indexOf("STATUS:3") != -1) {
+			if (wifi.releaseTCP()) {
+				debugSerial2.print(F("release tcp ok\r\n"));
+			} else {
+				debugSerial2.print(F("release tcp err\r\n"));
+			}
+		} else {
+			debugSerial2.println(F("no connection to release"));
+		}
+	} else {
+		debugSerial2.println(
+				F("WiFi not connected, failed TCP connection test"));
 	}
 }
 
 void setup(void) {
+	  pinMode(REDPin, OUTPUT);
+	  pinMode(GREENPin, OUTPUT);
+	  pinMode(BLUEPin, OUTPUT);
+//	  for (int i = 0; i < 255; i++) {
+	  	  	rgb.setColor(255,0,0);
+	  		delay(1000);
+	  		rgb.setColor(0,255,0);
+	  		delay(1000);
+	  		rgb.setColor(0,0,255);
+	  		delay(1000);
+//	  	}
 	debugSerial2.begin(115200);
 	debugSerial2.print(F("setup begin\r\n"));
 	wifi.begin();
@@ -78,46 +160,10 @@ void loop(void) {
 	}
 
 	if (wifiConnected) {
-		uint8_t buffer[256] = { 0 };
-
-		if (wifi.createTCP(HOST_NAME, HOST_PORT)) {
-			debugSerial2.print(F("create tcp ok\r\n"));
-		} else {
-			debugSerial2.print(F("create tcp err\r\n"));
-			wifiConnected = false;
-		}
-		if (wifiConnected) {
-			char *hello = "GET /ping HTTP/1.0\r\n\r\n";
-			wifi.send((const uint8_t*) hello, strlen(hello));
-
-			uint32_t len = wifi.recv(buffer, sizeof(buffer), 10000);
-			debugSerial2.print(F("Current Status: "));
-			String status = wifi.getIPStatus();
-			debugSerial2.println(status);
-			if (len > 0) {
-				debugSerial2.print(F("Received:["));
-				for (uint32_t i = 0; i < len; i++) {
-					debugSerial2.print((char) buffer[i]);
-				}
-				debugSerial2.print(F("]\r\n"));
-			} else {
-				wifiConnected = false;
-			}
-
-			if (status.indexOf("STATUS:3") != -1) {
-				if (wifi.releaseTCP()) {
-					debugSerial2.print(F("release tcp ok\r\n"));
-				} else {
-					debugSerial2.print(F("release tcp err\r\n"));
-				}
-			} else {
-				debugSerial2.println(F("no connection to release"));
-			}
-		} else {
-			debugSerial2.println(F("WiFi not connected, failed TCP connection test"));
-		}
+		save_value("testId", "testVal");
 	} else {
-		debugSerial2.println(F("WiFi not connected, not attempting TCP connection"));
+		debugSerial2.println(
+				F("WiFi not connected, not attempting TCP connection"));
 	}
 	delay(5000);
 }
