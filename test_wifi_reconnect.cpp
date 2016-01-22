@@ -103,6 +103,11 @@ void blinkGreen(int times) {
 	}
 }
 
+void printCurTime() {
+	debugSerial2.print(F(" cur_millis: "));
+	debugSerial2.println(millis());
+}
+
 /*ESP8266 Methods*/
 void connectToWifi() {
 	setTeal();
@@ -134,7 +139,18 @@ String checkAndReleaseConnection() {
 	return status;
 }
 
+int calcAndDoDelay(int i) {
+	int delayTime = HTTP_DELAY_BETWEEN_RETRY
+	;
+	debugSerial2.print(F("Sleeping between retry: "));
+	debugSerial2.print(delayTime * (i + 1));
+	printCurTime();
+	delay(delayTime * (i + 1));
+	return delayTime;
+}
+
 void save_value(String sensorId, String value) {
+	printCurTime();
 	value.replace(" ", "");
 	//Build a HTTP GET string to store the update
 //	String URI_STRING = "GET /ping/";
@@ -162,12 +178,17 @@ void save_value(String sensorId, String value) {
 
 //	uint8_t responseBuffer[256] = { 0 };
 	for (int i = 0; i < HTTP_RETRIES; i++) {
+		debugSerial2.print(F("HTTP_RETRIES: "));
+		debugSerial2.print(i);
+		printCurTime();
 		bool tcpEstablished = false;
 		if (wifi.createTCP(HOST_NAME, HOST_PORT)) {
 			tcpEstablished = true;
-			debugSerial2.print(F("create tcp ok\r\n"));
+			debugSerial2.print(F("create tcp ok"));
+			printCurTime();
 		} else {
-			debugSerial2.print(F("create tcp err\r\n"));
+			debugSerial2.print(F("create tcp err"));
+			printCurTime();
 			setYellow();
 			if ( i + 1 == HTTP_RETRIES) {
 				wifiConnected = false;
@@ -183,10 +204,11 @@ void save_value(String sensorId, String value) {
 				//		uint32_t len = wifi.recv(responseBuffer, sizeof(responseBuffer), 10000);
 
 				httpGetOk = wifi.recvHTTP( HTTP_REQ_TIMEOUT);
-				debugSerial2.print(F("httpGetOk: "));
-				debugSerial2.println(httpGetOk);
 			}
 
+			debugSerial2.print(F("httpGetOk: "));
+			debugSerial2.print(httpGetOk);
+			printCurTime();
 //		if (len > 0) {
 //			debugSerial2.print(F("Received:["));
 //			for (uint32_t i = 0; i < len; i++) {
@@ -206,14 +228,13 @@ void save_value(String sensorId, String value) {
 				checkAndReleaseConnection();
 			}
 
-			int delayTime = HTTP_DELAY_BETWEEN_RETRY
-			;
-			debugSerial2.print(F("Sleeping between retry: "));
-			debugSerial2.println(delayTime * i + 1);
-			delay(delayTime * i + 1);
+			 calcAndDoDelay(i);
 		} else {
-			debugSerial2.println(F("Failed TCP connection test"));
+			debugSerial2.print(F("Failed TCP connection test"));
+			checkAndReleaseConnection();
+			printCurTime();
 			setYellow();
+			calcAndDoDelay(i);
 		}
 	}
 
@@ -271,6 +292,7 @@ void setup(void) {
 	}
 
 	debugSerial2.print(F("setup end\r\n"));
+	printCurTime();
 }
 
 void loop(void) {
@@ -286,7 +308,8 @@ void loop(void) {
 		debugSerial2.print(F("Temp: "));
 		debugSerial2.print(f);
 		debugSerial2.print(F(" Humid: "));
-		debugSerial2.println(h);
+		debugSerial2.print(h);
+		printCurTime();
 		save_value(HUMID_ID, String(h));
 		delay(5000);
 		save_value(TEMP_ID, String(f));
@@ -297,7 +320,9 @@ void loop(void) {
 				F("WiFi not connected, not attempting TCP connection"));
 	}
 	wifi.printFreeMem();
-
+	debugSerial2.print(F("UPDATE_DELAY: "));
+	debugSerial2.print(UPDATE_DELAY);
+	printCurTime();
 	delay(UPDATE_DELAY);
 }
 
