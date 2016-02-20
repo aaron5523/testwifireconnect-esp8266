@@ -23,6 +23,8 @@
 #include <RGBTools.h>
 #include "DHT.h"
 #include <math.h>
+#include "TGS4161.h"
+#include "CO2_ABC.h"
 
 #define SSID        "HOME-DE18"
 #define PASSWORD    "H210470C899576BD"
@@ -38,41 +40,13 @@
 
 #define vref 4.51 // For the computeVolts(); funtcion.
 
-#define figaroCO2Heater 5
-#define figaroCOcircuit 6
-#define tgspin A0
+#define CO2_HEATER_PIN 5
+#define CO2_DATA_PIN A0
 
 #define x1 350
 #define y1 0
 #define x2 3000
 #define y2 64
-
-double mv2ppm(double delta_mv) {
-	double a = (y1 - (((y2 * log(x1)) - (y1 * log(x2))) / (log(x1) - log(x2))))
-			/ log(x1);
-	double b = (((y2 * log(x1)) - (y1 * log(x2))) / (log(x1) - log(x2)));
-	return exp((delta_mv - b) / a);
-}
-
-double computeVolts(int rawADC) {
-	return ((rawADC * 4.95) / 1023.0);
-	return ((rawADC * 5.00) / 1023.0);
-}
-
-uint16_t getAverage(byte sensorPin, int avgNum, int del) {
-	int i = 0;
-	long sum = 0;
-	unsigned int value = 0;
-	unsigned int result = 0;
-
-	for (i = 0; i < avgNum; i++) {
-		value = analogRead(sensorPin);
-		sum = sum + value;
-		delayMicroseconds(del);
-	}
-	result = sum / avgNum;
-	return (result);
-}
 
 const int numReadings = 10;
 
@@ -515,7 +489,7 @@ int getTgs4161(byte tgsPin) {
 		currentMillis = millis();
 		//Serial.println(currentMillis - previousMillis);
 
-		figaroCO2Val = getAverage(tgsPin, 32, 1000); // take average measurement here every 1ms
+//		figaroCO2Val = getAverage(tgsPin, 32, 1000); // take average measurement here every 1ms
 
 //		incEmc = computeVolts((computeAdc(TGS4161_350) - figaroCO2Val)) * 1000;
 //		incEmc = computeVolts((figaroCO2Val)) * 1000;
@@ -550,67 +524,6 @@ int getTgs4161(byte tgsPin) {
 
 }
 
-void getRawCo2Reading() {
-	//	if (!wifiConnected) {
-	//		connectToWifi();
-	//	}
-	//
-	//	if (wifiConnected) {
-	//		float f = dht.readTemperature(true);
-	//		float h = dht.readHumidity();
-	//
-	//		debugSerial2.print(F("Temp: "));
-	//		debugSerial2.print(f);
-	//		debugSerial2.print(F(" Humid: "));
-	//		debugSerial2.print(h);
-	//		printCurTime();
-	//		save_value(HUMID_ID, String(h));
-	//		delay(5000);
-	//		save_value(TEMP_ID, String(f));
-	////		save_value("testId", "testVal");
-	//	} else {
-	//		rgb.setColor(255, 0, 0);
-	//		debugSerial2.println(
-	//				F("WiFi not connected, not attempting TCP connection"));
-	//	}
-//	unsigned long raw = analogRead(tgspin);
-//	debugSerial2.print(F("raw val: "));
-//	debugSerial2.println(raw);
-
-}
-
-void doLoopedReading(int loop_size, int delayTime) {
-
-	delay(1);        // delay in between reads for stability
-	for (int i = 0; i < loop_size; i++) {
-//		getRawCo2Reading();
-//		delay(delayTime);
-		// subtract the last reading:
-		total = total - readings[readIndex];
-		// read from the sensor:
-		readings[readIndex] = analogRead(tgspin);
-		// add the reading to the total:
-		total = total + readings[readIndex];
-		// advance to the next position in the array:
-		readIndex = readIndex + 1;
-
-		// if we're at the end of the array...
-		if (readIndex >= numReadings) {
-			// ...wrap around to the beginning:
-			readIndex = 0;
-		}
-
-		// calculate the average:
-		average = total / numReadings;
-		// send it to the computer as ASCII digits
-		debugSerial2.print(F("Avg: "));
-		debugSerial2.println(average);
-	}
-	double mv = getVolts(average);
-	debugSerial2.print(F("mv: "));
-	debugSerial2.println(mv);
-}
-
 void loop(void) {
 
 //	if (!wifiConnected) {
@@ -635,69 +548,6 @@ void loop(void) {
 //		debugSerial2.println(
 //				F("WiFi not connected, not attempting TCP connection"));
 //	}
-
-//	debugSerial2.println(F("========Initial Readings "));
-//	doLoopedReading(30, 1000);
-//	digitalWrite(figaroCO2Heater, LOW); // turn OFF heater VCC TGS4161
-//
-////	debugSerial2.println(F("========Heater On Readings "));
-////	doLoopedReading(30, 1000);
-////	debugSerial2.println(F("========Warming heater for 30 secs"));
-////	delay(30000);
-////	debugSerial2.println(F("========Heater On Readings "));
-////	doLoopedReading(1000, 1000);
-////	debugSerial2.println(F("========Heater Off Readings "));
-////	digitalWrite(figaroCO2Heater, HIGH); // turn OFF heater VCC TGS4161
-////	doLoopedReading(30, 1000);
-//	int co2Res = getTgs4161(tgspin);
-//	debugSerial2.print(F(" CO2->"));
-//	debugSerial2.println(co2Res);
-//	debugSerial2.print(F("UPDATE_DELAY: "));
-//	debugSerial2.print(UPDATE_DELAY);
-//	wifi.printFreeMem();
-//	printCurTime();
-//	delay(UPDATE_DELAY);
-
-	uint16_t sensorVal = getAverage(A0, 100, 5);
-	debugSerial2.print("calVal: ");
-	debugSerial2.println(calVal);
-
-	if (calVal < sensorVal) {
-		calVal = sensorVal;
-	}
-	double volt = computeVolts(sensorVal);
-	double sensorVolt = (volt / 7.8) * 1000;
-	double calVolt = (computeVolts(calVal) / 7.8) * 1000;
-	double EMF = calVolt - sensorVolt;
-	double ppm = mv2ppm(EMF);
-	debugSerial2.print("ADC: ");
-	debugSerial2.print(sensorVal);
-	debugSerial2.print(" / ");
-	debugSerial2.print(volt);
-	debugSerial2.println("V");
-	debugSerial2.print("Sensor: ");
-	debugSerial2.print(sensorVolt);
-	debugSerial2.println("mV");
-	debugSerial2.print("Calibration: Val: ");
-	debugSerial2.print(calVal);
-	debugSerial2.print(" calVolt: ");
-	debugSerial2.print(calVolt);
-	debugSerial2.println("mV");
-	debugSerial2.print("EMF:");
-	debugSerial2.print(EMF);
-	debugSerial2.println("mV");
-	debugSerial2.print("CO2: ");
-	debugSerial2.print(int(ppm));
-	debugSerial2.println("ppm");
-
-	if (ppm < 500)
-		debugSerial2.println("Green");
-	if (ppm >= 500 && ppm < 1000)
-		debugSerial2.println("Yellow");
-	if (ppm >= 1000)
-		debugSerial2.println("Red");
-
-	debugSerial2.println();
 
 	delay(5000);
 }
