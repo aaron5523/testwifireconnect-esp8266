@@ -27,7 +27,7 @@
 #include "CO2_ABC.h"
 
 #define SSID        "HOME-DE18"
-#define PASSWORD    "H210470C899576BD"
+#define PASSWORD    ""
 #define HOST_NAME   "10.0.0.12"
 #define HOST_PORT   (8090)
 #define URI_STRING_BUFFER_LENGTH   (64)
@@ -281,16 +281,14 @@ void doRGBPOST() {
 }
 
 void setup(void) {
-	pinMode(tgspin, INPUT);
-	digitalWrite(tgspin, HIGH);
+
 
 	pinMode(REDPin, OUTPUT);
 	pinMode(GREENPin, OUTPUT);
 	pinMode(BLUEPin, OUTPUT);
-	pinMode(figaroCO2Heater, OUTPUT);
+
 //    pinMode(figaroCOcircuit, OUTPUT);
 
-	digitalWrite(figaroCO2Heater, HIGH); // turn OFF heater VCC TGS4161
 
 	doRGBPOST();
 	debugSerial2.begin(57600);
@@ -479,7 +477,6 @@ unsigned long previousMillis = 0;
 int getTgs4161(byte tgsPin) {
 
 	//digitalWrite(figaroCircuit, LOW); // disconect R12 of the circuit (only for tgs2442)
-	digitalWrite(figaroCO2Heater, LOW); // turn ON heater VCC
 
 	currentMillis = millis();
 	previousMillis = currentMillis;
